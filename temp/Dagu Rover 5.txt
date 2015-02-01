@@ -1,0 +1,559 @@
+// http://www.bajdi.com
+// Dagu Rover 5: 4 motors / 4 encoders
+// ÂµController = ATmega1280 (Dagu Red Back Spider)
+// Motor controller = Dagu 4 channel motor controller
+// Using 4 encoders to control the speed of the motors
+// Wireless remote control with nRF24L01 module
+// The Rover is controlled by my "Arduino remote control"
+
+#include <Servo.h>
+#include <SPI.h>
+#include "nRF24L01.h"
+#include "RF24.h"
+
+// Encoders
+volatile unsigned long PulseM[4];   // Time between pulses
+volatile unsigned long TimeM[4];  // Time when the last pulse got in
+unsigned long lastPulseM[4]; // Time since the last pulse 
+int targetPulse[4];  // THIS INTEGER CONTROLS THE SPEED OF THE MOTORS (900 fastest - 9000 slowest)
+const int maxTargetPulse = 9000;  // pulse time for slowest speed
+const int minTargetPulse = 900;   // pulse time for fastest speed
+
+// Motor pins
+const int DirM[4] = {
+  30,31,32,33}; // direction pins 
+const int PWMpinM[4] = {
+  4,5,6,7};  // pwm pins
+int PWMM[4];  // pwm values
+
+// nRF24L01 radio
+RF24 radio(48,49);
+const uint64_t pipes[2] = { 
+  0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
+
+// Timer
+#define runEvery(t) for (static typeof(t) _lasttime;(typeof(t))((typeof(t))millis() - _lasttime) > (t);_lasttime += (t))
+
+// More output pins
+const int redLed = 34; // low battery led
+const int buzzer = 35; // buzzer
+const int orangeLeds = 38; // orange leds
+const int headlight = 39; // white leds
+const int blueLed = 40;   // blue led = wireless link down
+
+// Structs for communication
+typedef struct{
+  int X;
+  int Y;
+  int Z;
+  int A;
+  int B;
+  int C;
+  int D;
+}
+struct1_t;
+struct1_t remote;
+
+typedef struct{
+  float motors;
+  float batRover;
+}
+struct2_t;
+struct2_t rover;
+
+// Analog pins
+int analogPins[5] = {
+  A0,A1,A2,A3,A4};
+int analogReadings[5];
+
+// Servos
+Servo bottomServo;
+Servo shouldServo; 
+Servo clawServo;  
+Servo rollServo;
+int bottomPos = 1540;
+const int bottomPosMax = 1900;
+const int bottomPosMin = 1250;
+int shouldPos = 1400;
+const int shouldPosMax = 2260;
+const int shouldPosMin = 900;
+int clawPos = 1500;
+const int clawPosMax = 2220;
+const int clawPosMin = 1460;
+int rollPos = 1500;
+const int rollPosMax = 2500;
+const int rollPosMin = 600;
+
+// Other stuff...
+byte current;
+byte battery;
+byte orangeLedState;
+unsigned long startTime;
+unsigned long endTime;
+int time;
+
+void setup()
+{
+  Serial.begin(115200);
+  // Setup radio
+  radio.begin();
+  radio.setPALevel( RF24_PA_MAX ) ; 
+  radio.setDataRate(RF24_1MBPS);
+  //radio.setDataRate(RF24_250KBPS);
+  //radio.enableDynamicPayloads() ;
+  //radio.setAutoAck(true);
+  //radio.setPayloadSize(14);
+  radio.openWritingPipe(pipes[1]);
+  radio.openReadingPipe(1,pipes[0]);
+  radio.startListening();
+
+  //Setup motor pins
+  for(int i=0; i<4; i++)
+  {
+    pinMode(DirM[i], OUTPUT);
+    pinMode(PWMpinM[i], OUTPUT);  
+  }
+
+  // Setup encoder pins
+  attachInterrupt(0,M1encoder,CHANGE);   // pin D2
+  attachInterrupt(1,M2encoder,CHANGE);   // pin D3
+  attachInterrupt(4,M3encoder,CHANGE);   // pin D19
+  attachInterrupt(5,M4encoder,CHANGE);   // pin D18
+
+  //Output pins
+  pinMode(redLed, OUTPUT);  // error led (red)
+  pinMode(orangeLeds, OUTPUT); // orange leds
+  pinMode(headlight, OUTPUT); // white leds
+  pinMode(blueLed, OUTPUT); // blue led
+  pinMode(buzzer, OUTPUT); // buzzer
+
+  //Servos
+  bottomServo.writeMicroseconds(bottomPos);
+  shouldServo.writeMicroseconds(shouldPos);
+  clawServo.writeMicroseconds(clawPos);
+  rollServo.writeMicroseconds(rollPos);
+  bottomServo.attach(9,1250,1600);     
+  shouldServo.attach(10,1240,1700);   
+  clawServo.attach(11,1600,1850);
+  rollServo.attach(12,600,2400);
+}
+
+void loop(void)
+{
+  startTime = millis();
+
+  // Radio 
+  runEvery(20)     // running this code to often leads to dropped packets
+  {
+    radio.stopListening();
+    bool ok = radio.write( &rover, sizeof(rover) );
+    radio.startListening();
+
+    unsigned long started_waiting_at = millis();
+    bool timeout = false;
+    while ( ! radio.available() && ! timeout )
+      //if (millis() - started_waiting_at > 1+(radio.getMaxTimeout()/1000) )
+      if (millis() - started_waiting_at > 200 )
+        timeout = true;
+
+    if ( timeout )          // no wireless connection
+    {
+      digitalWrite(blueLed, HIGH);
+      stopped();
+      Serial.println("Failed, response timed out.");
+    }
+    else
+    {
+      digitalWrite(blueLed, LOW);
+      radio.read( &remote, sizeof(remote) );
+    }
+  }
+  // end of radio stuff
+
+  // Analog reading: checking battery voltage and motor current
+  for (int i=0; i<5; i+=1)
+  {
+    analogRead(analogPins[i]);                      // don't use first reading
+    analogReadings[i] = analogRead(analogPins[i]);
+  }
+
+  // Add all motor currents (to sent to remote control)
+  rover.motors = (analogReadings[1] + analogReadings[2] + analogReadings[3] + analogReadings[4]) / 204.6;
+
+  // Check if a motor is stalled (400 = +-1.95A)
+  if (analogReadings[1] > 400 || analogReadings[2] > 400 || analogReadings[3] > 400 || analogReadings[4] > 400)
+  {
+    current = LOW;
+    digitalWrite(buzzer, HIGH);    // sound buzzer if motor(s) are stalled
+  }
+  else
+  {
+    current = HIGH;           
+    digitalWrite(buzzer, LOW);
+  } 
+
+  // Check 2S Lipo battery voltage
+  rover.batRover = analogReadings[0] / 102.3;  // 1023 = 10V
+  if(rover.batRover > 7)
+  {
+    digitalWrite(redLed, LOW);
+    battery = HIGH;
+  }
+  else
+  {
+    battery = LOW;
+    digitalWrite(redLed, HIGH);
+  }
+
+  // End of analog readings
+
+  if(battery == HIGH && current == HIGH) //battery == ok, motor current == ok
+  {  
+    if (remote.Z == LOW)   // driving mode
+    {
+      digitalWrite(headlight, HIGH); // turn on headlights
+      if (remote.X >= 490 && remote.X <= 500 && remote.Y >= 495 && remote.Y <= 505 )    // joystick is centered
+      {
+        stopped();
+      }
+
+      if (remote.Y > 495 && remote.Y < 505 && remote.X < 490)                  // hard left = left motors backward, right motors forward
+      {
+        targetPulse[0] = (map(remote.X, 490, 0, maxTargetPulse, minTargetPulse));
+        targetPulse[1] = targetPulse[0];
+        targetPulse[2] = targetPulse[0];
+        targetPulse[3] = targetPulse[0];
+        pwmMotors();
+        turnLeft();
+      }
+
+      if (remote.Y > 495 && remote.Y < 505 && remote.X > 500)                  // hard right = left motors forward, right motors backward
+      {
+        targetPulse[0] = (map(remote.X, 500, 1023, maxTargetPulse, minTargetPulse));
+        targetPulse[1] = targetPulse[0];
+        targetPulse[2] = targetPulse[0];
+        targetPulse[3] = targetPulse[0];
+        pwmMotors();
+        turnRight();
+      }
+
+      if (remote.Y > 505 && remote.X > 490 && remote.X < 500)               // joystick forward = all motors forward
+      {
+        targetPulse[0] = (map(remote.Y, 505, 1023, maxTargetPulse, minTargetPulse));
+        targetPulse[1] = targetPulse[0];
+        targetPulse[2] = targetPulse[0];
+        targetPulse[3] = targetPulse[0];
+        pwmMotors();
+        forward();
+      }
+
+      if (remote.Y < 495 && remote.X > 490 && remote.X < 500)               // joystick backward = all motors backward
+      {
+        targetPulse[0] = (map(remote.Y, 495, 0, maxTargetPulse, minTargetPulse));
+        targetPulse[1] = targetPulse[0];
+        targetPulse[2] = targetPulse[0];
+        targetPulse[3] = targetPulse[0];
+        pwmMotors();
+        backward();
+      }
+
+      if (remote.Y > 505 && (remote.X < 490 || remote.X > 500))              // forward turning
+      {
+        if (remote.X < 490)
+        {
+          targetPulse[0] = (map(remote.Y, 505, 1023, maxTargetPulse, minTargetPulse));            // turn left
+          targetPulse[1] = targetPulse[0];
+          targetPulse[2] = (map(remote.X, 490, 0, minTargetPulse, maxTargetPulse));
+          targetPulse[3] = targetPulse[2];
+          pwmMotors();
+          forward();
+        }
+        if (remote.X > 500)
+        {
+          targetPulse[2] = (map(remote.Y, 505, 1023, maxTargetPulse, minTargetPulse));            // turn right
+          targetPulse[3] = targetPulse[2];
+          targetPulse[0] = (map(remote.X, 500, 1023, minTargetPulse, maxTargetPulse));
+          targetPulse[1] = targetPulse[0];
+          pwmMotors();
+          forward();
+        }
+      }
+
+      if (remote.Y < 495 && (remote.X < 490 || remote.X > 500))              // backward turning
+      {
+        if (remote.X < 490)
+        {
+          targetPulse[0] = (map(remote.Y, 495, 0, maxTargetPulse, minTargetPulse));            // turn left
+          targetPulse[1] = targetPulse[0];
+          targetPulse[2] = (map(remote.X, 500, 0, minTargetPulse, maxTargetPulse));
+          targetPulse[3] = targetPulse[2];
+          pwmMotors();
+          backward();
+        }
+        if (remote.X > 500)
+        {
+          targetPulse[2] = (map(remote.Y, 495, 0, maxTargetPulse, minTargetPulse));          // turn right
+          targetPulse[3] = targetPulse[2];
+          targetPulse[0] = (map(remote.X, 500, 1023, minTargetPulse, maxTargetPulse));
+          targetPulse[1] = targetPulse[0];
+          pwmMotors();
+          backward();
+        }
+      }
+
+
+    } // end of driving mode
+
+    // Start gripper mode
+    else{         
+      stopped();
+      blinkOrangeLeds();
+      runEvery(40)  
+      {
+        if (remote.X > 600)
+        {
+          bottomPos += 10;    // move gripper right
+          if (bottomPos > bottomPosMax)
+          {
+            bottomPos = bottomPosMax;
+          }
+        }
+
+        if (remote.X < 400)
+        {
+          bottomPos -= 10;    // move gripper left
+          if (bottomPos < bottomPosMin)
+          {
+            bottomPos = bottomPosMin;
+          }
+        }
+
+        if (remote.Y > 600)
+        {
+          shouldPos -= 10;    // move gripper down
+          if (shouldPos < shouldPosMin)
+          {
+            shouldPos = shouldPosMin;
+          }
+
+        }
+        if (remote.Y < 400)
+        {
+          shouldPos += 10;    // move gripper up
+          if (shouldPos > shouldPosMax)
+          {
+            shouldPos = shouldPosMax;
+          }
+        }
+
+        if ( remote.A == LOW)   // open claw
+        {
+          clawPos += 10;
+          if (clawPos > clawPosMax)
+          {
+            clawPos = clawPosMax;
+          }
+        }
+
+        if ( remote.B == LOW)    // close claw
+        {
+          clawPos -= 10;
+          if (clawPos < clawPosMin)
+          {
+            clawPos = clawPosMin;
+          }
+        }
+
+        if ( remote.C == LOW)    // rotate claw
+        {
+          rollPos -= 10;
+          if (rollPos < rollPosMin)
+          {
+            rollPos = rollPosMin;
+          }
+        }
+
+        if ( remote.D == LOW)   // rotate claw
+        {
+          rollPos += 10;
+          if (rollPos > rollPosMax)
+          {
+            rollPos = rollPosMax;
+          } 
+        }
+        bottomServo.writeMicroseconds(bottomPos);
+        shouldServo.writeMicroseconds(shouldPos);
+        clawServo.writeMicroseconds(clawPos);
+        rollServo.writeMicroseconds(rollPos);
+      }
+    } // end of gripper mode
+  }
+  else
+  {
+    stopped();
+  }
+
+  endTime = millis();
+  time = endTime - startTime;
+
+
+  // serial printing
+  runEvery(500){
+    Serial.print("remote.X = ");
+    Serial.println(remote.X);
+    Serial.print("remote.Y = ");
+    Serial.println(remote.Y);
+    Serial.print("remote.Z = ");
+    Serial.println(remote.Z);
+    Serial.print("remote.A = ");
+    Serial.println(remote.A);
+    Serial.print("remote.B = ");
+    Serial.println(remote.B);
+    Serial.print("remote.C = ");
+    Serial.println(remote.C);
+    Serial.print("remote.D = ");
+    Serial.println(remote.D);  
+    Serial.print("rover.batRover = ");
+    Serial.println(rover.batRover);
+    Serial.print("time = ");
+    Serial.println(time);
+    Serial.print("bottomPos");
+    Serial.println(bottomPos);
+    Serial.print("shouldPos");
+    Serial.println(shouldPos);
+    Serial.print("clawPos");
+    Serial.println(clawPos);
+    Serial.print("rollPos");
+    Serial.println(rollPos); 
+    for (int i=0; i<4; i +=1)
+    {
+      Serial.print("PulseM = ");
+      Serial.println(PulseM[i]);
+      Serial.print("PWMM = ");
+      Serial.println(PWMM[i]);
+    }
+    
+    // end of serial printing*/
+  }
+
+}
+
+void M1encoder()
+{
+  PulseM[0]=micros()-TimeM[0];              // time between last state change and this state change
+  TimeM[0]=micros();                        // update TimeM[0] with time of most recent state change
+}
+
+void M2encoder()
+{
+  PulseM[1]=micros()-TimeM[1];                               
+  TimeM[1]=micros();                                      
+}
+
+void M3encoder()
+{
+  PulseM[2]=micros()-TimeM[2];                              
+  TimeM[2]=micros();                                   
+}
+
+void M4encoder()
+{
+  PulseM[3]=micros()-TimeM[3];                            
+  TimeM[3]=micros();
+}
+
+void stopped()
+{
+  for(int i=0; i<4; i++)
+  {
+    PWMM[i] = 0;
+    analogWrite(PWMpinM[i], PWMM[i]);
+  }
+  digitalWrite(orangeLeds, LOW);
+}
+
+void forward()
+{
+  for(int i=0; i<4; i++)
+  {
+    digitalWrite(DirM[i], HIGH);
+    analogWrite(PWMpinM[i], PWMM[i]);
+  }
+  digitalWrite(orangeLeds, LOW);
+}
+
+void backward()
+{
+  for(int i=0; i<4; i++)
+  {
+    digitalWrite(DirM[i], LOW);
+    analogWrite(PWMpinM[i], PWMM[i]);
+  }
+  digitalWrite(orangeLeds, LOW);
+}
+
+void turnLeft()
+{
+  digitalWrite(DirM[0], HIGH);
+  digitalWrite(DirM[1], HIGH);
+  digitalWrite(DirM[2], LOW);
+  digitalWrite(DirM[3], LOW);
+  for(int i=0; i<4; i++)
+  {
+    analogWrite(PWMpinM[i], PWMM[i]);
+  }
+  blinkOrangeLeds();
+}
+
+void turnRight()
+{
+  digitalWrite(DirM[0], LOW);
+  digitalWrite(DirM[1], LOW);
+  digitalWrite(DirM[2], HIGH);
+  digitalWrite(DirM[3], HIGH);
+  for(int i=0; i<4; i++)
+  {
+    analogWrite(PWMpinM[i], PWMM[i]);
+  }
+  blinkOrangeLeds();
+}
+
+void blinkOrangeLeds()
+{
+  runEvery(200)
+  {
+    if (orangeLedState == LOW)
+      orangeLedState = HIGH;
+    else
+      orangeLedState = LOW;
+  }
+  digitalWrite(orangeLeds, orangeLedState);
+}
+
+void pwmMotors()
+{
+  for (int i=0; i<4; i+=1)
+  {
+    lastPulseM[i] = micros() - TimeM[i];
+    if (lastPulseM[i] > targetPulse[i])
+    {
+      PWMM[i]+=2;
+      if(PWMM[i] > 210)                   // Max pwm = 210
+      {
+        PWMM[i] = 210;
+      }
+    }
+    if (lastPulseM[i] < targetPulse[i])
+    {
+      PWMM[i]-=2;
+      if (PWMM[i] < 0)
+      {
+        PWMM[i] = 0;
+      }
+    }
+  }
+}
+
+
+
+
