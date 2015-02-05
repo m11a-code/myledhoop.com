@@ -473,19 +473,20 @@ void handleStrip( int temp ) {
             }
         }
         break;
-    case 18: //3 spaced chasers, with filled in gaps --------------DAVIS
-        d = (color / MAX_COLORS) % MAX_STRIPES + 3; //chaser
+    case 18: //chasers + statics --------------DAVIS
+        d = (color / MAX_COLORS) % MAX_STRIPES + 2; //chaser, was +1, now +2
         c = GetColor(color % MAX_COLORS);       //color
         j = tick % (strip.numPixels()/d);
         for(i=0; i < strip.numPixels(); i++) {
-            if(i % (strip.numPixels()/d) == j) {
-                strip.setPixelColor(i, strip.Color(127,0,127));
+            x = i % (strip.numPixels()/d);
+            if((x == j) || (x == 0)) {
+                strip.setPixelColor(i, c);
             }
             else {
                 strip.setPixelColor(i, strip.Color(0,0,0));
             }
         }
-        break;     
+        break;    
     case 19: //3 spaced chasers, with filled in gaps --------------DAVIS
         d = (color / MAX_COLORS) % MAX_STRIPES + 4; //chaser
         c = GetColor(color % MAX_COLORS);       //color
