@@ -1,0 +1,3 @@
+I'm putting this in here because https://gist.github.com/bryanthompson/ef4ecf24ad36410f077b pointed to jscrane's SPI library.
+
+I saw you grabbed the older, plain SPI repository. There's also this one, which was updated 6 months ago. Don't know if it's helpful or not.

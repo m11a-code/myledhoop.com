@@ -4,7 +4,7 @@
 #include "hearts.h"
 
 //since data is on 11 and clock is on 13, we can use hardware SPI
-LPD8806 strip = LPD8806(160);
+LPD8806 strip = LPD8806(160); //32 LED's per meter * 5
 
 int demoCaseNumber = 0;
 
@@ -474,8 +474,31 @@ void handleStrip( int temp ) {
         }
         break;
     case 18: //chasers + statics --------------DAVIS
-        d = (color / MAX_COLORS) % MAX_STRIPES + 2; //chaser, was +1, now +2
-        c = GetColor(color % MAX_COLORS);       //color
+      //If you look up an RGB chart in Photoshop, just divide the values by 2 to arrive at the necessary input)
+      //int MAX_COLORS = 19;
+      //int MAX_MODES = 17;
+      //int MAX_STRIPES = 5;
+      //int color = 1
+      //I'm fucking with this because I don't really understand his math - it seems very convoluted.    
+
+                    //***ORIGINAL***
+//        d = (color / MAX_COLORS) % MAX_STRIPES + 2; //chaser, was +1, now +2
+//        c = strip.Color(20,127,104);       //hardcoded teal
+//        j = tick % (strip.numPixels()/d);
+//        for(i=0; i < strip.numPixels(); i++) {
+//            x = i % (strip.numPixels()/d);
+//            if((x == j) || (x == 0)) {
+//                strip.setPixelColor(i, c);
+//            }
+//            else {
+//                strip.setPixelColor(i, strip.Color(0,0,0));
+//            }
+//        }
+//        break;  
+
+      
+        d = 3; //chaser, was +1, now +2
+        c = strip.Color(20,127,104);       //hardcoded teal
         j = tick % (strip.numPixels()/d);
         for(i=0; i < strip.numPixels(); i++) {
             x = i % (strip.numPixels()/d);
