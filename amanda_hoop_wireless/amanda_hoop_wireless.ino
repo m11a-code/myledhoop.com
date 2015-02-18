@@ -1,11 +1,19 @@
+/*
+ Copyright (C) 2011 J. Coliz <maniacbug@ymail.com>
+ This program is free software; you can redistribute it and/or
+ modify it under the terms of the GNU General Public License
+ version 2 as published by the Free Software Foundation.
+ */
+#include <SPI.h>
+#include "nRF24L01.h"
+#include "RF24.h"
 #include "LPD8806.h"
-#include "SPI.h"
 #include <avr/sleep.h>
 #include "hearts.h"
-
-//since data is on 11 and clock is on 13, we can use hardware SPI
-LPD8806 strip = LPD8806(160); //32 LED's per meter * 5
-
+// #include <printf.h>  // Printf is used for debug.
+//
+// Initialization & Hardware Configuration
+//
 int demoCaseNumber = 0;
 
 int intervalDemo = 10000;     // Looking like this is 10 seconds.
@@ -35,6 +43,59 @@ long interval = 500;
 uint16_t i, j, x, y;
 uint32_t c, d;
 
+// Since data is on 11 and clock is on 13, we can use hardware SPI
+// This will now go through the wireless which is acting on the SPI bus,
+// ultimately allowing us to send over the SPI bus wirelessly.
+LPD8806 strip = LPD8806(160);
+//
+// Set up nRF24L01 radio on SPI bus plus pins 7 & 8.
+RF24 radio(7,8);
+// Sets the role of this unit in hardware.
+// @HARDWARE: Connect to GND to be the 'pong' receiver.
+// @HARDWARE: Leave open to be the 'ping' transmitter.
+
+const int role_pin = 5;     // @TODO: Need to figure out which pin would be
+                            // best for our usage.
+//
+// Topology.
+//
+// Radio pipe addresses for the 2 nodes to communicate.
+const uint64_t pipes[2] = {
+    0xF0F0F0F0E1LL,
+    0xF0F0F0F0D2LL
+};
+//
+// Role management.
+//
+// Set up role.
+// This sketch uses the same software for all the nodes in this system.
+// Doing so greatly simplifies testing.
+// The hardware itself specifies which node it is.
+//
+// This is done through the 'role_pin.'
+//
+// The various roles supported by this sketch.
+typedef enum {
+    role_ping_out = 1,
+    role_pong_back
+} role_e;
+// The debug-friendly names of those roles.
+const char* role_friendly_name[] = {
+    "invalid",
+    "Ping out",
+    "Pong back"
+};
+// The role of the current running sketch.
+role_e role;
+//
+// Payload.
+//
+const int min_payload_size = 4;
+const int max_payload_size = 32;
+const int payload_size_increments_by = 1;
+int next_payload_size = min_payload_size;
+char receive_payload[max_payload_size + 1]; // +1 to allow room for a
+                                            // terminating NULL char.
 // Set the first variable to the NUMBER of pixels. 32 = 32 pixels in a row
 // The LED strips are 32 LEDs per meter but you can extend/cut the strip
 
@@ -44,7 +105,7 @@ void ISR_Wake() {
 }
 
 void blackout() {
-    for(int i=0; i < strip.numPixels()+1; i++) {
+    for(int i = 0; i < strip.numPixels() + 1; i++) {
         strip.setPixelColor(i, strip.Color(0,0,0));
     }
     strip.show();
@@ -54,8 +115,8 @@ void blackout() {
 void triggerSleep() {
     blackout();
 
-    attachInterrupt(0,ISR_Wake,LOW); //pin 2
-    attachInterrupt(1,ISR_Wake,LOW); //pin 3
+    attachInterrupt(0, ISR_Wake, LOW); //pin 2
+    attachInterrupt(1, ISR_Wake, LOW); //pin 3
 
     set_sleep_mode(SLEEP_MODE_PWR_DOWN);
     sleep_enable();
@@ -102,65 +163,65 @@ void handleButtons() {
     }
 }
 
-void handleStrip( int temp ) {
-    //switch(mode%MAX_MODES) {
-    switch (temp){
+void handleStrip(int case_num) {
+    // switch(mode%MAX_MODES) {
+    switch (case_num){
     case 0: //solid
-    c = GetColor(color%MAX_COLORS);
-    for(i=0; i<strip.numPixels(); i++) {
+    c = GetColor(color % MAX_COLORS);
+    for(i = 0; i < strip.numPixels(); i++) {
         strip.setPixelColor(i, c);
     }
     break;
     case 1:  //every other led 
-    c = GetColor((tick%3+color)% MAX_COLORS);
-    for(i=0; i<strip.numPixels(); i++) {
+    c = GetColor((tick % 3 + color) % MAX_COLORS);
+    for(i = 0; i < strip.numPixels(); i++) {
         strip.setPixelColor(i, c);
     }
     break;
     case 2:
     if(tick % 50 == 0) {
-        c = GetColor(color%MAX_COLORS);
-        for(i=0; i<strip.numPixels(); i++) {
+        c = GetColor(color % MAX_COLORS);
+        for(i = 0; i < strip.numPixels(); i++) {
             strip.setPixelColor(i, c);
         }
     }
     if(tick % 50 == 25) {
-        c = strip.Color(0,0,0);
-        for(i=0; i<strip.numPixels(); i++) {
+        c = strip.Color(0, 0, 0);
+        for(i = 0; i < strip.numPixels(); i++) {
             strip.setPixelColor(i, c);
         }
     }
     break;
     case 3:  //strobe 2 color
     if(tick % 30 == 0) {
-        c = GetColor(color%MAX_COLORS);
-        for(i=0; i<strip.numPixels(); i++) {
+        c = GetColor(color % MAX_COLORS);
+        for(i = 0; i < strip.numPixels(); i++) {
             strip.setPixelColor(i, c);
         }
     }
     if(tick % 30 == 15) {
-        c = GetColor(color%MAX_COLORS+2);
-        for(i=0; i<strip.numPixels(); i++) {
+        c = GetColor(color % MAX_COLORS + 2);
+        for(i = 0; i < strip.numPixels(); i++) {
             strip.setPixelColor(i, c);
         }
     }
     break; 
     case 4:  //strobe 3 color
     if(tick % 60 == 20) {
-        c = GetColor(color%MAX_COLORS);
-        for(i=0; i<strip.numPixels(); i++) {
+        c = GetColor(color % MAX_COLORS);
+        for(i = 0; i < strip.numPixels(); i++) {
             strip.setPixelColor(i, c);
         }
     }
     if(tick % 60 == 40) {
-        c = GetColor(color%MAX_COLORS+random(5));
-        for(i=0; i<strip.numPixels(); i++) {
+        c = GetColor(color % MAX_COLORS + random(5));
+        for(i = 0; i < strip.numPixels(); i++) {
             strip.setPixelColor(i, c);
         }
     }
     if(tick % 60 == 60) {
-        c = GetColor(color%MAX_COLORS+random(2));
-        for(i=0; i<strip.numPixels(); i++) {
+        c = GetColor(color % MAX_COLORS + random(2));
+        for(i = 0; i < strip.numPixels(); i++) {
             strip.setPixelColor(i, c);
         }
     }
@@ -168,47 +229,47 @@ void handleStrip( int temp ) {
     case 5: //chasers
         d = (color / MAX_COLORS) % MAX_STRIPES + 1; //chaser
         c = GetColor(color % MAX_COLORS);       //color
-        j = tick % (strip.numPixels()/d);
-        for(i=0; i < strip.numPixels(); i++) {
-            if(i % (strip.numPixels()/d) == j) {
+        j = tick % (strip.numPixels() / d);
+        for(i = 0; i < strip.numPixels(); i++) {
+            if(i % (strip.numPixels() / d) == j) {
                 strip.setPixelColor(i, c);
             }
             else {
-                strip.setPixelColor(i, strip.Color(0,0,0));
+                strip.setPixelColor(i, strip.Color(0, 0, 0));
             }
         }
         break;
     case 6: //chasers + statics
         d = (color / MAX_COLORS) % MAX_STRIPES + 1; //chaser
         c = GetColor(color % MAX_COLORS);       //color
-        j = tick % (strip.numPixels()/d);
-        for(i=0; i < strip.numPixels(); i++) {
-            x = i % (strip.numPixels()/d);
+        j = tick % (strip.numPixels() / d);
+        for(i = 0; i < strip.numPixels(); i++) {
+            x = i % (strip.numPixels() / d);
             if((x == j) || (x == 0)) {
                 strip.setPixelColor(i, c);
             }
             else {
-                strip.setPixelColor(i, strip.Color(0,0,0));
+                strip.setPixelColor(i, strip.Color(0, 0, 0));
             }
         }
         break;
     case 7: //fuckin' rainbows
     j = tick % 384;
-    for(i=0; i < strip.numPixels(); i++) {
-        strip.setPixelColor(i, Wheel(((i * 384 / strip.numPixels() * (color%MAX_COLORS)) + j) % 384));
+    for(i = 0; i < strip.numPixels(); i++) {
+        strip.setPixelColor(i, Wheel(((i * 384 / strip.numPixels() * (color % MAX_COLORS)) + j) % 384));
     }
     break;
     case 8:  //rainbow dither
         d = (color / MAX_COLORS) % MAX_STRIPES + 1; //chaser
         c = tick % 384;       
-        j = tick % (strip.numPixels()/d);
-        for(i=0; i < strip.numPixels(); i++) {
-            strip.setPixelColor(i, Wheel(((i * 384 / strip.numPixels() * (color%MAX_COLORS)) + c) % 384));        //first pixel
-            strip.setPixelColor(i + 1, Wheel(((i * 384 / strip.numPixels() * (color%MAX_COLORS)) + c) % 384));    //second pixel
-            strip.setPixelColor(i + 2, Wheel(((i * 384 / strip.numPixels() * (color%MAX_COLORS)) + c) % 384));    //third pixel
-            strip.setPixelColor(i + 32, Wheel(((i * 384 / strip.numPixels() * (color%MAX_COLORS)) + c) % 384));        //first pixel
-            strip.setPixelColor(i + 33, Wheel(((i * 384 / strip.numPixels() * (color%MAX_COLORS)) + c) % 384));    //second pixel
-            strip.setPixelColor(i + 34, Wheel(((i * 384 / strip.numPixels() * (color%MAX_COLORS)) + c) % 384));
+        j = tick % (strip.numPixels() / d);
+        for(i = 0; i < strip.numPixels(); i++) {
+            strip.setPixelColor(i, Wheel(((i * 384 / strip.numPixels() * (color % MAX_COLORS)) + c) % 384));        //first pixel
+            strip.setPixelColor(i + 1, Wheel(((i * 384 / strip.numPixels() * (color % MAX_COLORS)) + c) % 384));    //second pixel
+            strip.setPixelColor(i + 2, Wheel(((i * 384 / strip.numPixels() * (color % MAX_COLORS)) + c) % 384));    //third pixel
+            strip.setPixelColor(i + 32, Wheel(((i * 384 / strip.numPixels() * (color % MAX_COLORS)) + c) % 384));        //first pixel
+            strip.setPixelColor(i + 33, Wheel(((i * 384 / strip.numPixels() * (color % MAX_COLORS)) + c) % 384));    //second pixel
+            strip.setPixelColor(i + 34, Wheel(((i * 384 / strip.numPixels() * (color % MAX_COLORS)) + c) % 384));
             strip.show();
             strip.setPixelColor(i, 0);
             strip.setPixelColor(i + 32, 0);
@@ -473,43 +534,19 @@ void handleStrip( int temp ) {
             }
         }
         break;
-    case 18: //chasers + statics --------------DAVIS
-      //If you look up an RGB chart in Photoshop, just divide the values by 2 to arrive at the necessary input)
-      //int MAX_COLORS = 19;
-      //int MAX_MODES = 17;
-      //int MAX_STRIPES = 5;
-      //int color = 1
-      //I'm fucking with this because I don't really understand his math - it seems very convoluted.    
-
-                    //***ORIGINAL***
-//        d = (color / MAX_COLORS) % MAX_STRIPES + 2; //chaser, was +1, now +2
-//        c = strip.Color(20,127,104);       //hardcoded teal
-//        j = tick % (strip.numPixels()/d);
-//        for(i=0; i < strip.numPixels(); i++) {
-//            x = i % (strip.numPixels()/d);
-//            if((x == j) || (x == 0)) {
-//                strip.setPixelColor(i, c);
-//            }
-//            else {
-//                strip.setPixelColor(i, strip.Color(0,0,0));
-//            }
-//        }
-//        break;  
-
-      
-        d = 3; //chaser, was +1, now +2
-        c = strip.Color(20,127,104);       //hardcoded teal
+    case 18: //3 spaced chasers, with filled in gaps --------------DAVIS
+        d = (color / MAX_COLORS) % MAX_STRIPES + 3; //chaser
+        c = GetColor(color % MAX_COLORS);       //color
         j = tick % (strip.numPixels()/d);
         for(i=0; i < strip.numPixels(); i++) {
-            x = i % (strip.numPixels()/d);
-            if((x == j) || (x == 0)) {
-                strip.setPixelColor(i, c);
+            if(i % (strip.numPixels()/d) == j) {
+                strip.setPixelColor(i, strip.Color(127,0,127));
             }
             else {
                 strip.setPixelColor(i, strip.Color(0,0,0));
             }
         }
-        break;    
+        break;     
     case 19: //3 spaced chasers, with filled in gaps --------------DAVIS
         d = (color / MAX_COLORS) % MAX_STRIPES + 4; //chaser
         c = GetColor(color % MAX_COLORS);       //color
@@ -541,8 +578,15 @@ void handleStrip( int temp ) {
 }
 
 
+void setup() {  // The previous was 'void setup(void)' which is unnecessary as leaving it empty implies 'void'
+    //
+    // Role.
+    //
+    // Set up the role pin.
+    pinMode(role_pin, INPUT);
+    digitalWrite(role_pin, HIGH);
+    delay(20);  // Just to get a solid reading on the role pin.
 
-void setup() {
     // Start up the LED strip
     strip.begin();
 
@@ -552,14 +596,144 @@ void setup() {
     digitalWrite(powerPin, HIGH);
     digitalWrite(upModePin, HIGH);
     digitalWrite(upColorPin, HIGH);
-//triggerSleep();
+
+    // Read the address pin, establish our role.
+    if(digitalRead(role_pin))
+        role = role_ping_out;
+    else
+        role = role_pong_back;
+    //
+    // Print preamble.
+    //
+    Serial.begin(115200);
+    //printf_begin();   // Printf is used for debug.
+  
+    Serial.println(F("RF24/examples/pingpair_dyn/"));
+    Serial.print(F("ROLE: "));
+    Serial.println(role_friendly_name[role]);
+    //
+    // Setup and configure rf radio.
+    //
+    radio.begin();
+    // Enable dynamic payloads.
+    radio.enableDynamicPayloads();
+    // Optionally, increase the delay between retries & # of retries.
+    radio.setRetries(5,15);
+    //
+    // Open pipes to other nodes for communication.
+    //
+    // This simple sketch opens two pipes for these two nodes to communicate
+    // back and forth.
+    // Open 'our' pipe for writing.
+    // Open the 'other' pipe for reading, in position #1 (we can have up to 5
+    // pipes open for reading).
+    if (role == role_ping_out) {
+        radio.openWritingPipe(pipes[0]);
+        radio.openReadingPipe(1,pipes[1]);
+    } else {
+        radio.openWritingPipe(pipes[1]);
+        radio.openReadingPipe(1,pipes[0]);
+    }
+    //
+    // Start listening.
+    //
+    radio.startListening();
+    //
+    // Dump the configuration of the rf unit for debugging.
+    //
+    radio.printDetails();
 }
+void loop() {   // The previous was 'void setup(void)' which is unnecessary as leaving it empty implies 'void'
 
-
-void loop() {
     tick++;
     handleStrip(demoLoopSeconds());
     handleButtons();
+
+    //
+    // Ping out role.
+    // Repeatedly send the current time.
+    //
+    if (role == role_ping_out) {
+        // The payload will always be the same, what will change is how much
+        // of it we send.
+        static char send_payload[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ789012";
+
+        // First, stop listening so we can talk.
+        radio.stopListening();
+        // Take the time, and send it.
+        // This will block until complete.
+        // Serial.print(F("Now sending length "));
+        // Serial.println(next_payload_size);
+        radio.write(send_payload, next_payload_size);
+        // Now, continue listening.
+        radio.startListening();
+        // Wait here until we get a response, or timeout.
+        unsigned long started_waiting_at = millis();
+        bool timeout = false;
+        while (!radio.available() && !timeout)
+            if (millis() - started_waiting_at > 500)
+                timeout = true;
+        // Describe the results.
+        if (timeout) {
+            Serial.println(F("Failed, response timed out."));
+        } else {
+            // Grab the response, compare, and send to debugging spew.
+            uint8_t len = radio.getDynamicPayloadSize();
+
+            // If a corrupt dynamic payload is received, it will be flushed.
+            if(!len){
+                return; 
+            }
+        
+            radio.read(receive_payload, len);
+            // Put a zero at the end for easy printing.
+            receive_payload[len] = 0;
+            // Spew it.
+            // Serial.print(F("Got response size="));
+            // Serial.print(len);
+            // Serial.print(F(" value="));
+            // Serial.println(receive_payload);
+        }
+    
+        // Update size for next time.
+        next_payload_size += payload_size_increments_by;
+        if (next_payload_size > max_payload_size)
+            next_payload_size = min_payload_size;
+        // Try again one second later.
+        delay(100);
+    }
+    //
+    // Pong back role.
+    // Receive each packet, dump it out, and send it back.
+    //
+    if (role == role_pong_back) {
+        // If there is data ready.
+        while (radio.available()) {
+            // Fetch the payload, and see if this was the last one.
+            uint8_t len = radio.getDynamicPayloadSize();
+
+            // If a corrupt dynamic payload is received, it will be flushed.
+            if(!len){
+                continue;
+            }
+      
+            radio.read(receive_payload, len);
+            // Put a zero at the end for easy printing.
+            receive_payload[len] = 0;
+            // Spew it.
+            Serial.print(F("Got response size="));
+            Serial.print(len);
+            Serial.print(F(" value="));
+            Serial.println(receive_payload);
+            // First, stop listening so we can talk.
+            radio.stopListening();
+            // Send the final one back.
+            radio.write(receive_payload, len);
+            Serial.println(F("Sent response."));
+            // Now, resume listening so we catch the next packets.
+            radio.startListening();
+        }
+    }
 }
 
 int demoLoopSeconds() {
@@ -570,6 +744,7 @@ int demoLoopSeconds() {
     }
     return (demoCaseNumber % 20);
 }
+
 
 
     /* Helper functions */
@@ -602,15 +777,15 @@ uint32_t Wheel(uint16_t WheelPos)
 }
 
 
-    uint32_t GetColor(int c)
-    {
-        switch(c) {
-            case 0:
-            return strip.Color(127,0,0);  //red
-            case 1:
-            return strip.Color(127,0,60);  
-            case 2:
-            return strip.Color(127,0,127); 
+uint32_t GetColor(int c)
+{
+    switch(c) {
+        case 0:
+        return strip.Color(127,0,0);  //red
+        case 1:
+        return strip.Color(127,0,60);  
+        case 2:
+        return strip.Color(127,0,127); 
         case 3:  //orange
         return strip.Color(127,60,0);
         case 4:  //yellow
@@ -628,26 +803,28 @@ uint32_t Wheel(uint16_t WheelPos)
         case 10:
         return strip.Color(60,60,0);
         case 11:
-            return strip.Color(0,0,127);  //blue
-            case 12:
-            return strip.Color(0,60,127);
-            case 13:
-            return strip.Color(0,127,127);
-            case 14:
-            return strip.Color(0,127,0);  //green
-            case 15:
-            return strip.Color(127,30,10);
-            case 16:
-            return strip.Color(25,80,100);
-            case 17:
-            return strip.Color(127,127,127);  //White
-            case 18:
-            int r, g, b;
-            r = random(0, 50);
-            g = random(40, 90);
-            b = random(80, 128);
-            return strip.Color(r,g,b);
-            default:
-            return strip.Color(0,0,0);
-        }
+        return strip.Color(0,0,127);  //blue
+        case 12:
+        return strip.Color(0,60,127);
+        case 13:
+        return strip.Color(0,127,127);
+        case 14:
+        return strip.Color(0,127,0);  //green
+        case 15:
+        return strip.Color(127,30,10);
+        case 16:
+        return strip.Color(25,80,100);
+        case 17:
+        return strip.Color(127,127,127);  //White
+        case 18:
+        int r, g, b;
+        r = random(0, 50);
+        g = random(40, 90);
+        b = random(80, 128);
+        return strip.Color(r,g,b);
+        default:
+        return strip.Color(0,0,0);
     }
+}
+
+// vim:cin:ai:sts=2 sw=2 ft=cpp

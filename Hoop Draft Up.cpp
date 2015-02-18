@@ -1,15 +1,18 @@
 // http://www.myledhoop.com
 // LED Hula Hoop
 // Wireless remote control with nRF24L01 module
-// The 'hoop' is controlled by the "Remote Arduino Remote Control"
+// The 'hoop' is controlled by the "Arduino Remote Control"
 
 #include <SPI.h>
 #include "nRF24L01.h"
 #include "RF24.h"
 
 // nRF24L01 radio
-RF24 radio(48,49);    // What is the 48 and 49? Need to look into this.
-const uint64_t pipes[2] = { 
+// RF24 radio(_cepin, _cspin);
+RF24 radio(48, 49);
+// _cepin  The pin attached to Chip Enable on the RF module
+// _cspin  The pin attached to Chip Select
+const uint64_t pipes[2] = {
   0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
 
 // Timer
@@ -23,7 +26,7 @@ const uint64_t pipes[2] = {
 // const int blueLed = 40;   // blue led = wireless link down
 
 // Structs for communication
-typedef struct{
+typedef struct {
   // int X;
   // int Y;
   // int Z;
@@ -34,16 +37,16 @@ typedef struct{
 }
 struct1_t;
 
-// typedef struct{
+// typedef struct {
 //   float motors;
 //   float batRover;
 // }
 // struct2_t;
 // struct2_t rover;
 
-typedef struct{
-  int led_mode;   // Just ideas for now.
-  int isOK;       // Just ideas for now.
+typedef struct {
+  int led_mode;       // Just ideas for now.
+  int is_alive;       // Just ideas for now.
 }
 struct2_t;
 
@@ -63,7 +66,7 @@ void setup()
   Serial.begin(115200);   // Need to see why this number is bigger than the remote's baud rate...
   // Setup radio
   radio.begin();
-  radio.setPALevel( RF24_PA_MAX ) ; 
+  radio.setPALevel(RF24_PA_MAX) ; 
   radio.setDataRate(RF24_1MBPS);
   //radio.setDataRate(RF24_250KBPS);
   //radio.enableDynamicPayloads() ;

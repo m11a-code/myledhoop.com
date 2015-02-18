@@ -21,9 +21,9 @@ typedef struct{
 }
 struct1_t;
 
-typedef struct{
-  int led_mode;   // Just ideas for now.
-  int isOK;       // Just ideas for now.
+typedef struct {
+  int led_mode;       // Just ideas for now.
+  int is_alive;       // Just ideas for now.
 }
 struct2_t;
 
@@ -31,7 +31,11 @@ struct1_t remote;
 struct2_t hoop;
 // struct2_t rover;
 
+// nRF24L01 radio
+// RF24 radio(_cepin, _cspin);
 RF24 radio(8,9);
+// _cepin  The pin attached to Chip Enable on the RF module
+// _cspin  The pin attached to Chip Select
 const uint64_t pipes[2] = { 
   0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
 
